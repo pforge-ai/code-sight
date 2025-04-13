@@ -21,6 +21,8 @@
 * **Web 界面**: 使用 Streamlit 构建交互式 Web 应用，方便用户操作和查看结果。
 
 ## 📁 项目结构
+```
+code-sight
 ├── .env                 # 存储 API Keys 等敏感信息 (不提交到版本库)
 ├── .env.example         # .env 的模板文件 (提交到版本库)
 ├── .gitignore           # Git 忽略文件列表
@@ -54,6 +56,7 @@
 ├── app.py               # Streamlit 应用入口
 ├── requirements.txt     # Python 依赖列表
 └── README.md            # 本文件
+```
 
 ## 🚀 安装与设置
 
