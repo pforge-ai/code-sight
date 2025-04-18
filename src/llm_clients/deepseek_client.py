@@ -10,6 +10,7 @@ from typing import List, Dict, Optional, Any
 # Import base class and configuration
 from .base import LLMClient
 from ..utils import config_loader as cfg
+from ..utils.json_utils import extract_json_string
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ class DeepSeekClient(LLMClient):
 
     def generate_response(self, prompt: str, context: Optional[str] = None) -> str:
         """Generates a response using the DeepSeek chat model."""
-        endpoint = f"{self.base_url}/v1/chat/completions"
+        endpoint = f"{self.base_url}/chat/completions"
         messages = []
         # Optional: Add a system prompt
         # messages.append({"role": "system", "content": "You are a helpful code analysis assistant."})
@@ -172,7 +173,7 @@ Answer the following question: {prompt}
 JSON 对象:
 """
 
-        endpoint = f"{self.base_url}/v1/chat/completions"
+        endpoint = f"{self.base_url}/chat/completions"
         messages = [{"role": "user", "content": prompt}]
         payload = {
             "model": cfg.DEEPSEEK_CHAT_MODEL, # Use the configured chat model for this task too
@@ -195,7 +196,8 @@ JSON 对象:
 
                 # Parse the JSON string returned in the content
                 try:
-                    rel_data = json.loads(response_text)
+                    
+                    rel_data = json.loads(extract_json_string(response_text))
                     relationships = rel_data.get('relationships')
 
                     # Basic validation

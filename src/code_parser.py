@@ -215,142 +215,101 @@ def parse_python_file(filepath: str, project_root: str) -> Optional[Tuple[str, D
         logger.error(f"Unexpected error parsing {relative_filepath}: {e}", exc_info=True)
         return None
 
-def parse_project(project_dir: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """
-    Parses all Python files in a project directory, respecting ignore patterns.
 
-    Args:
-        project_dir (str): The root directory of the project to parse.
+def scan_file_tree(project_dir: str, ignore_patterns: List[str]) -> List[str]:
+    """
+    扫描项目目录，返回所有文件和目录的相对路径列表（尊重忽略规则）。
+    """
+    file_tree_paths = []
+    absolute_project_dir = os.path.abspath(project_dir)
+    logger.info(f"Scanning file tree for: {absolute_project_dir}")
+
+    for root, dirs, files in os.walk(absolute_project_dir, topdown=True):
+        # --- 过滤忽略的目录 ---
+        original_dirs = list(dirs)
+        dirs[:] = [] # 清空 walk 将要访问的子目录列表
+        for d in original_dirs:
+            dir_abs_path = os.path.join(root, d)
+            dir_rel_path = os.path.relpath(dir_abs_path, absolute_project_dir).replace(os.sep, '/')
+            # 检查目录名 和 目录名/ 两种模式
+            if not cfg.should_ignore(dir_rel_path, ignore_patterns) and \
+               not cfg.should_ignore(dir_rel_path + '/', ignore_patterns):
+                dirs.append(d) # 保留未被忽略的目录
+                # 将未忽略的目录本身添加到列表
+                file_tree_paths.append(dir_rel_path)
+            else:
+                 logger.debug(f"Ignoring directory during scan: {dir_rel_path}")
+
+        # --- 处理文件 ---
+        for file in files:
+            file_abs_path = os.path.join(root, file)
+            file_rel_path = os.path.relpath(file_abs_path, absolute_project_dir).replace(os.sep, '/')
+
+            if not cfg.should_ignore(file_rel_path, ignore_patterns):
+                file_tree_paths.append(file_rel_path) # 添加未忽略的文件
+            else:
+                logger.debug(f"Ignoring file during scan: {file_rel_path}")
+
+    logger.info(f"Found {len(file_tree_paths)} files/directories in the tree.")
+    return file_tree_paths
+
+def read_readme(project_dir: str) -> Optional[str]:
+    """
+    尝试读取项目根目录下的 README.md 文件。
+    """
+    readme_path = os.path.join(project_dir, "README.md")
+    readme_content = None
+    if os.path.exists(readme_path):
+        try:
+            with open(readme_path, 'r', encoding='utf-8', errors='ignore') as f:
+                readme_content = f.read()
+            logger.info(f"Successfully read README.md from {readme_path}")
+        except Exception as e:
+            logger.error(f"Error reading README.md from {readme_path}: {e}")
+    else:
+        logger.info(f"README.md not found at {readme_path}")
+    return readme_content
+
+
+def parse_project(project_dir: str) -> Tuple[Dict[str, Any], Dict[str, Any], List[str], Optional[str]]:
+    """
+    解析项目，返回 AST 节点、导入信息、文件树结构和 README 内容。
 
     Returns:
-        Tuple[Dict, Dict]: (all_nodes_info, all_imports_info)
-                           Dictionaries keyed by relative file path.
+        Tuple[Dict, Dict, List[str], Optional[str]]:
+            (all_nodes_info, all_imports_info, file_tree, readme_content)
     """
     all_nodes_info: Dict[str, Dict[str, Any]] = {}
     all_imports_info: Dict[str, Dict[str, Any]] = {}
-    python_files_to_parse: List[str] = []
     absolute_project_dir = os.path.abspath(project_dir)
 
-    logger.info(f"Starting project parsing for: {absolute_project_dir}")
-    logger.info(f"Using ignore patterns: {cfg.IGNORE_PATTERNS}")
+    logger.info(f"Starting project parsing and scanning for: {absolute_project_dir}")
 
-    for root, dirs, files in os.walk(absolute_project_dir, topdown=True):
-        # --- Directory Ignore Logic ---
-        # Modify dirs in-place to prevent walking into ignored directories
-        original_dirs = list(dirs) # Copy original list for iteration
-        dirs[:] = [] # Clear the list that os.walk will use
-        for d in original_dirs:
-             dir_abs_path = os.path.join(root, d)
-             dir_rel_path = os.path.relpath(dir_abs_path, absolute_project_dir).replace(os.sep, '/')
-             # Check both 'dir_name' and 'dir_name/' patterns
-             if not cfg.should_ignore(dir_rel_path) and not cfg.should_ignore(dir_rel_path + '/'):
-                 dirs.append(d) # Keep directory if not ignored
-             else:
-                  logger.debug(f"Ignoring directory: {dir_rel_path}")
+    # 1. 扫描文件树 (传入当前的忽略模式)
+    file_tree = scan_file_tree(project_dir, cfg.IGNORE_PATTERNS)
 
-        # --- File Ignore Logic ---
-        for file in files:
-            if file.endswith('.py'):
-                file_abs_path = os.path.join(root, file)
-                file_rel_path = os.path.relpath(file_abs_path, absolute_project_dir).replace(os.sep, '/')
+    # 2. 读取 README
+    readme_content = read_readme(project_dir)
 
-                if not cfg.should_ignore(file_rel_path):
-                    python_files_to_parse.append(file_abs_path)
-                else:
-                     logger.debug(f"Ignoring file: {file_rel_path}")
+    # 3. 查找并解析 Python 文件 (从扫描到的文件树中筛选)
+    python_files_to_parse = [
+        os.path.join(absolute_project_dir, rel_path)
+        for rel_path in file_tree
+        if rel_path.endswith('.py') and os.path.isfile(os.path.join(absolute_project_dir, rel_path)) # 确保是文件
+    ]
 
-    logger.info(f"Found {len(python_files_to_parse)} Python files to parse after applying ignore rules.")
-    if not python_files_to_parse:
-        logger.warning(f"No Python files found or all files were ignored in {absolute_project_dir}")
-        return {}, {}
-
-    # --- Parse Files ---
+    logger.info(f"Found {len(python_files_to_parse)} Python files to parse based on file tree scan.")
     parsed_count = 0
     for py_file_abs in python_files_to_parse:
-        result = parse_python_file(py_file_abs, absolute_project_dir)
-        if result:
-            relative_filepath, parsed_nodes, file_imports = result
-            all_nodes_info[relative_filepath] = parsed_nodes
-            all_imports_info[relative_filepath] = file_imports
-            parsed_count += 1
+        # 确保文件仍然存在且未被忽略 (双重检查，scan_file_tree 应该已经处理)
+        file_rel_path_check = os.path.relpath(py_file_abs, absolute_project_dir).replace(os.sep, '/')
+        if not cfg.should_ignore(file_rel_path_check, cfg.IGNORE_PATTERNS):
+             result = parse_python_file(py_file_abs, absolute_project_dir)
+             if result:
+                 relative_filepath, parsed_nodes, file_imports = result
+                 all_nodes_info[relative_filepath] = parsed_nodes
+                 all_imports_info[relative_filepath] = file_imports
+                 parsed_count += 1
 
-    logger.info(f"Finished parsing. Successfully parsed {parsed_count}/{len(python_files_to_parse)} files.")
-    return all_nodes_info, all_imports_info
-
-# --- Example Usage (for testing this module directly) ---
-if __name__ == "__main__":
-    # Setup basic logging for testing
-    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-    # --- Create dummy files and ignore patterns for testing ---
-    TEST_DIR = "_test_parser_project"
-    IGNORE_FILE = os.path.join(TEST_DIR, ".myignore")
-    os.makedirs(os.path.join(TEST_DIR, "src"), exist_ok=True)
-    os.makedirs(os.path.join(TEST_DIR, "venv"), exist_ok=True)
-    os.makedirs(os.path.join(TEST_DIR, "data", "cache"), exist_ok=True)
-
-    with open(os.path.join(TEST_DIR, "src", "main.py"), "w") as f:
-        f.write("import helper\n\ndef run():\n  helper.do_work()\n")
-    with open(os.path.join(TEST_DIR, "src", "helper.py"), "w") as f:
-        f.write("def do_work():\n  print('Working')\n")
-    with open(os.path.join(TEST_DIR, "venv", "lib.py"), "w") as f:
-        f.write("# Should be ignored\n")
-    with open(os.path.join(TEST_DIR, "data", "cache", "temp.py"), "w") as f:
-        f.write("# Should be ignored by data/\n")
-    with open(os.path.join(TEST_DIR, "config.py"), "w") as f:
-        f.write("# Should be ignored by name\n")
-
-    # Create ignore file
-    with open(IGNORE_FILE, "w") as f:
-        f.write("# Ignore virtual environment\n")
-        f.write("venv/\n")
-        f.write("\n") # Empty line
-        f.write("# Ignore data directory\n")
-        f.write("data/\n")
-        f.write("# Ignore specific files by name\n")
-        f.write("config.py\n")
-        f.write("*.log\n") # Wildcard example
-
-    # --- Override config for testing ---
-    # Temporarily point config loader to our test ignore file
-    original_ignore_file = cfg.IGNORE_PATTERNS_FILE
-    original_ignore_patterns = cfg.IGNORE_PATTERNS
-    cfg.IGNORE_PATTERNS_FILE = IGNORE_FILE
-    cfg.IGNORE_PATTERNS = cfg.load_ignore_patterns(IGNORE_FILE)
-    logger.info(f"--- Running Parser Test with Ignore File: {IGNORE_FILE} ---")
-    logger.info(f"--- Test Ignore Patterns: {cfg.IGNORE_PATTERNS} ---")
-
-    # --- Run Parsing ---
-    nodes_data, imports_data = parse_project(TEST_DIR)
-
-    # --- Print Summary ---
-    print("\n--- Parsing Summary (Test) ---")
-    print(f"Total files parsed: {len(nodes_data)}")
-    for rel_path in nodes_data.keys():
-        print(f"  - Parsed: {rel_path}")
-    total_nodes = sum(len(nodes) for nodes in nodes_data.values())
-    print(f"Total nodes (functions/classes) found: {total_nodes}")
-    total_calls = sum(len(n.get('calls', [])) for file_nodes in nodes_data.values() for n in file_nodes.values())
-    print(f"Total calls recorded: {total_calls}")
-
-    # Example details
-    if "src/main.py" in nodes_data:
-        print("\n--- Details for src/main.py ---")
-        print("Nodes:", list(nodes_data["src/main.py"].keys()))
-        print("Imports:", imports_data.get("src/main.py", {}))
-        if "src/main.py::run" in nodes_data["src/main.py"]:
-             print("Calls in run():", nodes_data["src/main.py"]["src/main.py::run"].get('calls'))
-
-    # --- Clean up test directory ---
-    # Restore original config
-    cfg.IGNORE_PATTERNS_FILE = original_ignore_file
-    cfg.IGNORE_PATTERNS = original_ignore_patterns
-    try:
-        import shutil
-        shutil.rmtree(TEST_DIR)
-        logger.info(f"Cleaned up test directory: {TEST_DIR}")
-    except Exception as e:
-        logger.error(f"Failed to clean up test directory {TEST_DIR}: {e}")
-
-    print("\n--- Parser Test Complete ---")
-
+    logger.info(f"Finished parsing. Successfully parsed {parsed_count}/{len(python_files_to_parse)} Python files.")
+    return all_nodes_info, all_imports_info, file_tree, readme_content
